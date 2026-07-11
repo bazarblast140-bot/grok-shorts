@@ -1,3 +1,8 @@
 requests>=2.31
 edge-tts>=6.1
 imageio-ffmpeg>=0.4.9
+
+# YouTube upload
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2

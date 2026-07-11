@@ -1,7 +1,12 @@
-# Never commit secrets or build output.
+# Credentials — these must NEVER be committed. On the runner they are
+# materialised from GitHub secrets at build time.
+token.json
+token.json.old
+client_secret.json
 .env
 *.key
 
+# Build output
 work/
 out/
 

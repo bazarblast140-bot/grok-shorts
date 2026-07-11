@@ -10,7 +10,8 @@ Designed to run on a GitHub Actions free runner: no GPU, no paid media APIs,
 and a strictly streaming FFmpeg assembly so it never OOMs.
 
 Usage:
-    python main.py run       # build one Short
+    python main.py run       # build one Short (and upload, if configured)
+    python main.py reauth    # LOCAL ONLY: redo Google consent -> token.json
     python main.py models    # list model ids your XAI_API_KEY can use
     python main.py selftest  # offline check: ffmpeg + assembly, no API calls
 
@@ -23,6 +24,12 @@ Environment:
     TARGET_SECONDS(optional)  default 30
     BG_VIDEO      (optional)  path to a looping background mp4; if set, images
                               are skipped entirely (cheapest + fastest path)
+
+    UPLOAD_YOUTUBE   (optional) "false" to build only. Default: upload if a
+                                token.json is present.
+    YOUTUBE_PRIVACY  (optional) public | unlisted | private. Default public.
+    TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (optional)
+                                Success and failure notifications.
 """
 
 from __future__ import annotations
@@ -57,6 +64,13 @@ POLLINATIONS = "https://image.pollinations.ai/prompt/"
 
 VIDEO_W, VIDEO_H, FPS = 1080, 1920, 30
 
+# YouTube OAuth. token.json is written by `reauth` locally; on the runner the
+# workflow materialises it from the TOKEN_JSON secret.
+TOKEN_PATH = ROOT / "token.json"
+CLIENT_SECRET = ROOT / "client_secret.json"
+YOUTUBE_SCOPE = ["https://www.googleapis.com/auth/youtube.upload"]
+YOUTUBE_CATEGORY_ID = "27"  # Education
+
 # Trend titles that are queries, not story material.
 TREND_SKIP = ("weather", "result", "score", "vs", "live", "rate", "login")
 
@@ -70,6 +84,8 @@ class Config:
     num_scenes: int = 5
     target_seconds: int = 30
     bg_video: str = ""
+    upload_youtube: bool = False
+    youtube_privacy: str = "public"
     http_timeout: int = 90
     retries: int = 3
 
@@ -82,6 +98,23 @@ class Config:
                 "On GitHub Actions: add it under "
                 "Settings -> Secrets and variables -> Actions."
             )
+
+        # Upload by default when a token exists, so a run that has credentials
+        # never silently builds a video and sits on it. UPLOAD_YOUTUBE=false
+        # forces build-only.
+        raw_upload = os.environ.get("UPLOAD_YOUTUBE", "").strip().lower()
+        if raw_upload in ("false", "0", "no"):
+            upload = False
+        elif raw_upload in ("true", "1", "yes"):
+            upload = True
+        else:
+            upload = TOKEN_PATH.exists()
+
+        privacy = os.environ.get("YOUTUBE_PRIVACY", "public").strip().lower()
+        if privacy not in ("public", "unlisted", "private"):
+            log.warning("YOUTUBE_PRIVACY=%r is invalid; using 'public'.", privacy)
+            privacy = "public"
+
         return cls(
             xai_api_key=key,
             xai_model=os.environ.get("XAI_MODEL", "grok-4").strip(),
@@ -90,6 +123,8 @@ class Config:
             num_scenes=_env_int("NUM_SCENES", 5, lo=3, hi=8),
             target_seconds=_env_int("TARGET_SECONDS", 30, lo=15, hi=60),
             bg_video=os.environ.get("BG_VIDEO", "").strip(),
+            upload_youtube=upload,
+            youtube_privacy=privacy,
         )
 
 
@@ -546,6 +581,169 @@ def assemble(
 
 
 # --------------------------------------------------------------------------- #
+#  Step 6 — YouTube upload
+# --------------------------------------------------------------------------- #
+def youtube_service():
+    """An authorized YouTube client, refreshing token.json when it has expired."""
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+
+    creds = None
+    if TOKEN_PATH.exists():
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), YOUTUBE_SCOPE)
+
+    if not creds or not creds.valid:
+        refreshed = False
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                log.info("YouTube: refreshing expired token...")
+                creds.refresh(Request())
+                refreshed = True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("YouTube: refresh failed (%s).", str(exc)[:120])
+                creds = None
+
+        if not refreshed:
+            # Consent needs a browser, which a runner does not have. Say what to
+            # do instead of dying on a missing client_secret.json three frames
+            # later.
+            if os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"):
+                raise ConfigError(
+                    "The YouTube token is expired or revoked and cannot be "
+                    "refreshed on a headless runner. Fix it in three steps: "
+                    "(1) in Google Cloud Console set the OAuth consent screen to "
+                    "'In production' — while it is in 'Testing', Google expires "
+                    "refresh tokens after 7 days and the bot breaks every week; "
+                    "(2) run `python main.py reauth` on your laptop; "
+                    "(3) paste the new token.json into the TOKEN_JSON secret."
+                )
+            if not CLIENT_SECRET.exists():
+                raise ConfigError(
+                    f"client_secret.json not found at {CLIENT_SECRET}. Download "
+                    "the OAuth 'Desktop app' credentials from Google Cloud "
+                    "Console and save them there."
+                )
+            log.info("YouTube: opening the browser for consent...")
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(CLIENT_SECRET), YOUTUBE_SCOPE
+            )
+            creds = flow.run_local_server(port=0)
+
+        TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+
+    return build("youtube", "v3", credentials=creds)
+
+
+def set_thumbnail(youtube, video_id: str, video: Path) -> None:
+    """Use a frame of the video as the thumbnail. Never breaks the run."""
+    from googleapiclient.http import MediaFileUpload
+
+    thumb = WORK_DIR / f"thumb_{video_id}.jpg"
+    try:
+        run_ffmpeg(
+            ["-ss", "1.5", "-i", str(video), "-frames:v", "1", "-q:v", "2",
+             str(thumb)],
+            "thumbnail frame",
+        )
+        youtube.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(str(thumb), mimetype="image/jpeg"),
+        ).execute()
+        log.info("YouTube: thumbnail set.")
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Thumbnail skipped (%s). Custom thumbnails need a phone-verified "
+            "channel: youtube.com/verify",
+            str(exc)[:120],
+        )
+
+
+def upload_to_youtube(cfg: Config, video: Path, script: Script) -> str:
+    """Upload the Short and return its watch URL."""
+    from googleapiclient.http import MediaFileUpload
+
+    youtube = youtube_service()
+    body = {
+        "snippet": {
+            "title": script.title,
+            "description": script.description,
+            "tags": script.tags,
+            "categoryId": YOUTUBE_CATEGORY_ID,
+        },
+        "status": {
+            "privacyStatus": cfg.youtube_privacy,
+            "selfDeclaredMadeForKids": False,
+        },
+    }
+
+    log.info("YouTube: uploading (%s)...", cfg.youtube_privacy)
+    request = youtube.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=MediaFileUpload(
+            str(video), chunksize=-1, resumable=True, mimetype="video/mp4"
+        ),
+    )
+
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
+        if status:
+            log.info("YouTube: %d%% uploaded", int(status.progress() * 100))
+
+    video_id = response["id"]
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    log.info("YouTube: done -> %s", url)
+
+    set_thumbnail(youtube, video_id, video)
+    return url
+
+
+def reauth() -> None:
+    """Redo Google consent locally and rewrite token.json."""
+    if os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"):
+        raise ConfigError("reauth needs a browser; run it on your laptop.")
+
+    WORK_DIR.mkdir(exist_ok=True)
+    if TOKEN_PATH.exists():
+        backup = TOKEN_PATH.with_suffix(".json.old")
+        TOKEN_PATH.replace(backup)
+        log.info("Stale token backed up -> %s", backup.name)
+
+    youtube_service()  # opens the browser, writes a fresh token.json
+
+    log.info("=" * 62)
+    log.info("NEW TOKEN -> %s", TOKEN_PATH)
+    log.info("Now paste the ENTIRE contents of token.json into the GitHub")
+    log.info("secret TOKEN_JSON (Settings -> Secrets and variables -> Actions).")
+    log.info("=" * 62)
+
+
+# --------------------------------------------------------------------------- #
+#  Telegram
+# --------------------------------------------------------------------------- #
+def send_telegram(message: str) -> None:
+    """Best-effort status ping. Never raises — a dead bot must not fail a run."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        log.info("Telegram not configured; skipping notification.")
+        return
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": message},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        log.info("Telegram: notified.")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Telegram notification failed (%s).", str(exc)[:120])
+
+
+# --------------------------------------------------------------------------- #
 #  Orchestration
 # --------------------------------------------------------------------------- #
 def cleanup(run_id: str) -> None:
@@ -582,6 +780,15 @@ def run() -> Path:
         video = OUT_DIR / f"short_{run_id}.mp4"
         assemble(cfg, images, voice, duration, video)
 
+        watch_url = ""
+        if cfg.upload_youtube:
+            watch_url = upload_to_youtube(cfg, video, script)
+        else:
+            log.info(
+                "Upload skipped (no token.json, or UPLOAD_YOUTUBE=false). "
+                "The video is in out/."
+            )
+
         # Sidecar: everything an uploader step needs, without re-calling Grok.
         meta = OUT_DIR / f"short_{run_id}.json"
         meta.write_text(
@@ -593,6 +800,7 @@ def run() -> Path:
                     "tags": script.tags,
                     "topic": topic,
                     "duration_seconds": round(duration, 1),
+                    "youtube_url": watch_url,
                     "created_utc": datetime.utcnow().isoformat(timespec="seconds"),
                 },
                 ensure_ascii=False,
@@ -602,7 +810,21 @@ def run() -> Path:
         )
 
         log.info("RUN SUCCESS (id=%s) -> %s", run_id, video.name)
+        send_telegram(
+            "✅ Grok Short ready\n"
+            f"{script.title}\n"
+            f"Topic: {topic}\n"
+            f"Length: {duration:.0f}s\n"
+            + (watch_url or "Not uploaded — download it from the Actions artifact.")
+        )
         return video
+
+    except Exception as exc:
+        send_telegram(
+            f"❌ Grok Short FAILED (id={run_id})\n{type(exc).__name__}: "
+            f"{str(exc)[:400]}"
+        )
+        raise
     finally:
         cleanup(run_id)
 
@@ -645,7 +867,12 @@ def selftest() -> None:
     log.info("SELFTEST PASSED -> %s", video)
 
 
-COMMANDS = {"run": run, "models": list_models, "selftest": selftest}
+COMMANDS = {
+    "run": run,
+    "reauth": reauth,
+    "models": list_models,
+    "selftest": selftest,
+}
 
 
 def main() -> int:

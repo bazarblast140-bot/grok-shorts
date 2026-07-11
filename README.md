@@ -6,7 +6,7 @@ Actions runner.
 ```
 trending topic -> Grok (script + image prompts) -> edge-tts voiceover
     -> free Pollinations stills (or a looping background) -> FFmpeg
-    -> out/short_<id>.mp4  +  out/short_<id>.json
+    -> YouTube upload -> Telegram ping
 ```
 
 ## Cost
@@ -36,21 +36,52 @@ python main.py models
 python main.py run
 ```
 
-On GitHub: add `XAI_API_KEY` under **Settings -> Secrets and variables ->
-Actions**. Anything else (`XAI_MODEL`, `TTS_VOICE`, `NUM_SCENES`,
-`TARGET_SECONDS`) is an optional repository **variable** with a sane default.
+## YouTube upload
+
+One-time, on your laptop:
+
+1. In **Google Cloud Console**, create a project and enable **YouTube Data API v3**.
+2. On the **OAuth consent screen**, choose *External* and press **Publish app** so
+   the status reads **In production**. Skipping this is the single most common
+   way this bot breaks: while the app sits in *Testing*, Google expires refresh
+   tokens after 7 days and every run starts failing a week later.
+3. Create an **OAuth client ID** of type **Desktop app**, download the JSON, and
+   save it as `client_secret.json` next to `main.py`.
+4. Run `python main.py reauth` and sign in with the channel's Google account.
+   This writes `token.json`.
+5. Paste the entire contents of `token.json` into the `TOKEN_JSON` secret.
+
+`token.json` and `client_secret.json` are gitignored. They reach the runner only
+through secrets.
+
+When the token eventually needs replacing, the run fails with instructions
+rather than a confusing stack trace: re-run `reauth` and update `TOKEN_JSON`.
 
 ## Configuration
 
+Secrets (**Settings -> Secrets and variables -> Actions -> Secrets**):
+
+| Secret | Required | Notes |
+| --- | --- | --- |
+| `XAI_API_KEY` | yes | xAI key. |
+| `TOKEN_JSON` | for upload | Contents of `token.json`. |
+| `TELEGRAM_BOT_TOKEN` | no | Enables success/failure pings. |
+| `TELEGRAM_CHAT_ID` | no | Your chat id. |
+
+Variables (**…-> Variables**), all optional:
+
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `XAI_API_KEY` | — | Required. Secret. |
 | `XAI_MODEL` | `grok-4` | Verify with `python main.py models`. |
 | `TTS_VOICE` | `hi-IN-SwaraNeural` | Any edge-tts voice. |
 | `TTS_RATE` | `+12%` | Faster reads hold retention. |
 | `NUM_SCENES` | `5` | 3–8. |
 | `TARGET_SECONDS` | `30` | 15–60. |
+| `YOUTUBE_PRIVACY` | `public` | `public`, `unlisted` or `private`. |
 | `BG_VIDEO` | — | Path to a looping mp4. Skips image generation. |
+
+Upload happens whenever a `token.json` is present. Set `UPLOAD_YOUTUBE=false` to
+build without publishing; the video is still saved as a build artifact.
 
 ## Schedule
 

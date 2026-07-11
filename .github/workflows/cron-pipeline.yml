@@ -37,13 +37,23 @@ jobs:
       - name: Install Python packages
         run: pip install -r requirements.txt
 
-      - name: Build the Short
+      # The YouTube credentials live in a secret, never in the repo. printf (not
+      # echo) keeps the JSON byte-exact.
+      - name: Write the YouTube token
+        env:
+          TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
+        run: printf '%s' "$TOKEN_JSON" > token.json
+
+      - name: Build and upload the Short
         env:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           XAI_MODEL: ${{ vars.XAI_MODEL || 'grok-4' }}
           TTS_VOICE: ${{ vars.TTS_VOICE || 'hi-IN-SwaraNeural' }}
           NUM_SCENES: ${{ vars.NUM_SCENES || '5' }}
           TARGET_SECONDS: ${{ vars.TARGET_SECONDS || '30' }}
+          YOUTUBE_PRIVACY: ${{ vars.YOUTUBE_PRIVACY || 'public' }}
         run: python main.py run
 
       # The finished vertical mp4 plus a .json sidecar holding the title,
