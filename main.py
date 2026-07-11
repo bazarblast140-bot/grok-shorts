@@ -1,5 +1,5 @@
-"""
-Grok Shorts — a zero-cost, memory-lean YouTube Shorts pipeline.
+﻿"""
+Grok Shorts â€” a zero-cost, memory-lean YouTube Shorts pipeline.
 
 Pipeline:
     trending topic -> xAI Grok (script + image prompts) -> edge-tts voiceover
@@ -17,7 +17,7 @@ Usage:
 
 Environment:
     XAI_API_KEY   (required)  xAI API key
-    XAI_MODEL     (optional)  default "grok-4"
+    XAI_MODEL     (optional)  default "grok-4.5"
     TTS_VOICE     (optional)  default "hi-IN-SwaraNeural"
     TTS_RATE      (optional)  default "+12%"
     NUM_SCENES    (optional)  default 5
@@ -78,7 +78,7 @@ TREND_SKIP = ("weather", "result", "score", "vs", "live", "rate", "login")
 @dataclass(frozen=True)
 class Config:
     xai_api_key: str
-    xai_model: str = "grok-4"
+    xai_model: str = "grok-4.5"
     tts_voice: str = "hi-IN-SwaraNeural"
     tts_rate: str = "+12%"
     num_scenes: int = 5
@@ -117,7 +117,7 @@ class Config:
 
         return cls(
             xai_api_key=key,
-            xai_model=os.environ.get("XAI_MODEL", "grok-4").strip(),
+            xai_model=os.environ.get("XAI_MODEL", "grok-4.5").strip(),
             tts_voice=os.environ.get("TTS_VOICE", "hi-IN-SwaraNeural").strip(),
             tts_rate=os.environ.get("TTS_RATE", "+12%").strip(),
             num_scenes=_env_int("NUM_SCENES", 5, lo=3, hi=8),
@@ -222,7 +222,7 @@ def audio_duration(path: Path) -> float:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 1 — trending topic
+#  Step 1 â€” trending topic
 # --------------------------------------------------------------------------- #
 FALLBACK_TOPICS = [
     "Why the ocean looks blue but water is clear",
@@ -262,7 +262,7 @@ def fetch_topic() -> str:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 2 — Grok writes the script
+#  Step 2 â€” Grok writes the script
 # --------------------------------------------------------------------------- #
 @dataclass
 class Script:
@@ -274,7 +274,7 @@ class Script:
 
 
 SYSTEM_PROMPT = (
-    "You are a viral short-form video writer. You reply with JSON only — "
+    "You are a viral short-form video writer. You reply with JSON only â€” "
     "no prose, no markdown fences."
 )
 
@@ -408,7 +408,7 @@ def write_script(cfg: Config, topic: str) -> Script:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 3 — voiceover (edge-tts, free)
+#  Step 3 â€” voiceover (edge-tts, free)
 # --------------------------------------------------------------------------- #
 def synthesize_voice(cfg: Config, narration: str, out_path: Path) -> float:
     import asyncio
@@ -432,7 +432,7 @@ def synthesize_voice(cfg: Config, narration: str, out_path: Path) -> float:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 4 — visuals (free)
+#  Step 4 â€” visuals (free)
 # --------------------------------------------------------------------------- #
 def fetch_image(prompt: str, out_path: Path, timeout: int) -> bool:
     """One free Pollinations (Flux) still. Returns False if it doesn't arrive."""
@@ -469,7 +469,7 @@ def render_images(cfg: Config, prompts: list[str], run_id: str) -> list[Path]:
 
     if not paths:
         raise PipelineError(
-            "Every scene image failed. Pollinations may be down — set BG_VIDEO "
+            "Every scene image failed. Pollinations may be down â€” set BG_VIDEO "
             "to a looping mp4 to build the Short without generated stills."
         )
     log.info("Images: %d/%d rendered.", len(paths), len(prompts))
@@ -477,7 +477,7 @@ def render_images(cfg: Config, prompts: list[str], run_id: str) -> list[Path]:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 5 — assembly (streaming; never holds frames in RAM)
+#  Step 5 â€” assembly (streaming; never holds frames in RAM)
 # --------------------------------------------------------------------------- #
 # One thread: libx264 allocates per-thread frame buffers, and on a small runner
 # that is what tips an encode into OOM. Encoding 1080x1920 single-threaded is
@@ -565,7 +565,7 @@ def assemble(
         ["-f", "concat", "-safe", "0", "-i", str(listing),
          "-i", str(voice),
          "-map", "0:v:0", "-map", "1:a:0",
-         "-c:v", "copy",            # segments already encoded — no re-encode
+         "-c:v", "copy",            # segments already encoded â€” no re-encode
          "-c:a", "aac", "-b:a", "128k",
          "-shortest", "-movflags", "+faststart",
          str(out_path)],
@@ -581,7 +581,7 @@ def assemble(
 
 
 # --------------------------------------------------------------------------- #
-#  Step 6 — YouTube upload
+#  Step 6 â€” YouTube upload
 # --------------------------------------------------------------------------- #
 def youtube_service():
     """An authorized YouTube client, refreshing token.json when it has expired."""
@@ -614,7 +614,7 @@ def youtube_service():
                     "The YouTube token is expired or revoked and cannot be "
                     "refreshed on a headless runner. Fix it in three steps: "
                     "(1) in Google Cloud Console set the OAuth consent screen to "
-                    "'In production' — while it is in 'Testing', Google expires "
+                    "'In production' â€” while it is in 'Testing', Google expires "
                     "refresh tokens after 7 days and the bot breaks every week; "
                     "(2) run `python main.py reauth` on your laptop; "
                     "(3) paste the new token.json into the TOKEN_JSON secret."
@@ -725,7 +725,7 @@ def reauth() -> None:
 #  Telegram
 # --------------------------------------------------------------------------- #
 def send_telegram(message: str) -> None:
-    """Best-effort status ping. Never raises — a dead bot must not fail a run."""
+    """Best-effort status ping. Never raises â€” a dead bot must not fail a run."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
@@ -811,17 +811,17 @@ def run() -> Path:
 
         log.info("RUN SUCCESS (id=%s) -> %s", run_id, video.name)
         send_telegram(
-            "✅ Grok Short ready\n"
+            "âœ… Grok Short ready\n"
             f"{script.title}\n"
             f"Topic: {topic}\n"
             f"Length: {duration:.0f}s\n"
-            + (watch_url or "Not uploaded — download it from the Actions artifact.")
+            + (watch_url or "Not uploaded â€” download it from the Actions artifact.")
         )
         return video
 
     except Exception as exc:
         send_telegram(
-            f"❌ Grok Short FAILED (id={run_id})\n{type(exc).__name__}: "
+            f"âŒ Grok Short FAILED (id={run_id})\n{type(exc).__name__}: "
             f"{str(exc)[:400]}"
         )
         raise

@@ -1,12 +1,13 @@
-name: Grok Shorts
+﻿name: Grok Shorts
 
 on:
-  # 08:00, 14:00 and 20:00 IST (UTC+5:30).
+  # Morning and evening: 08:00 and 18:00 IST (UTC+5:30).
   # GitHub's scheduler is best-effort and often runs late or skips under load.
   # For punctual runs, point an external trigger (e.g. cron-job.org) at this
   # workflow's dispatch endpoint instead and delete the schedule below.
   schedule:
-    - cron: "30 2,8,14 * * *"
+    - cron: "30 2 * * *"
+    - cron: "30 12 * * *"
   workflow_dispatch:
 
 # A late run must never pile on top of a running one.
@@ -49,7 +50,7 @@ jobs:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          XAI_MODEL: ${{ vars.XAI_MODEL || 'grok-4' }}
+          XAI_MODEL: ${{ vars.XAI_MODEL || 'grok-4.5' }}
           TTS_VOICE: ${{ vars.TTS_VOICE || 'hi-IN-SwaraNeural' }}
           NUM_SCENES: ${{ vars.NUM_SCENES || '5' }}
           TARGET_SECONDS: ${{ vars.TARGET_SECONDS || '30' }}
@@ -57,7 +58,7 @@ jobs:
         run: python main.py run
 
       # The finished vertical mp4 plus a .json sidecar holding the title,
-      # description and tags — everything an upload step would need.
+      # description and tags â€” everything an upload step would need.
       - name: Publish the video as an artifact
         if: success()
         uses: actions/upload-artifact@v4
@@ -69,4 +70,4 @@ jobs:
 
       - name: Report failure
         if: failure()
-        run: echo "::error::Short build failed — open the 'Build the Short' step above."
+        run: echo "::error::Short build failed â€” open the 'Build the Short' step above."

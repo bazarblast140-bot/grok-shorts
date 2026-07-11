@@ -1,4 +1,4 @@
-# Grok Shorts
+﻿# Grok Shorts
 
 A zero-cost, memory-lean YouTube Shorts pipeline that runs on a free GitHub
 Actions runner.
@@ -18,7 +18,7 @@ trending topic -> Grok (script + image prompts) -> edge-tts voiceover
 | Images | Pollinations (Flux) | free, no key |
 | Assembly + hosting | FFmpeg on GitHub Actions | free |
 
-Set `BG_VIDEO` to a looping mp4 and the image step is skipped entirely — the
+Set `BG_VIDEO` to a looping mp4 and the image step is skipped entirely â€” the
 run then costs one Grok call and nothing else.
 
 ## Setup
@@ -26,7 +26,7 @@ run then costs one Grok call and nothing else.
 ```bash
 pip install -r requirements.txt
 
-# Prove ffmpeg and the assembly path work — no API calls, no spend.
+# Prove ffmpeg and the assembly path work â€” no API calls, no spend.
 python main.py selftest
 
 # Model ids drift; confirm what your key can actually use.
@@ -68,25 +68,25 @@ Secrets (**Settings -> Secrets and variables -> Actions -> Secrets**):
 | `TELEGRAM_BOT_TOKEN` | no | Enables success/failure pings. |
 | `TELEGRAM_CHAT_ID` | no | Your chat id. |
 
-Variables (**…-> Variables**), all optional:
+Variables (**â€¦-> Variables**), all optional:
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `XAI_MODEL` | `grok-4` | Verify with `python main.py models`. |
+| `XAI_MODEL` | `grok-4.5` | Verify with `python main.py models`. |
 | `TTS_VOICE` | `hi-IN-SwaraNeural` | Any edge-tts voice. |
 | `TTS_RATE` | `+12%` | Faster reads hold retention. |
-| `NUM_SCENES` | `5` | 3–8. |
-| `TARGET_SECONDS` | `30` | 15–60. |
+| `NUM_SCENES` | `5` | 3â€“8. |
+| `TARGET_SECONDS` | `30` | 15â€“60. |
 | `YOUTUBE_PRIVACY` | `public` | `public`, `unlisted` or `private`. |
-| `BG_VIDEO` | — | Path to a looping mp4. Skips image generation. |
+| `BG_VIDEO` | â€” | Path to a looping mp4. Skips image generation. |
 
 Upload happens whenever a `token.json` is present. Set `UPLOAD_YOUTUBE=false` to
 build without publishing; the video is still saved as a build artifact.
 
 ## Schedule
 
-`cron-pipeline.yml` runs at 08:00 / 14:00 / 20:00 IST. GitHub's scheduler is
-best-effort and routinely runs late or skips under load. For punctual runs,
+`cron-pipeline.yml` runs twice a day, at 08:00 and 18:00 IST. GitHub's scheduler
+is best-effort and routinely runs late or skips under load. For punctual runs,
 delete the `schedule:` block and POST to the dispatch endpoint from an external
 cron (e.g. cron-job.org) with a classic PAT scoped `repo` + `workflow`:
 
@@ -112,5 +112,5 @@ step at the sidecar and no second model call is needed.
 The assembly is deliberately raw FFmpeg rather than MoviePy: each scene is
 encoded on its own and the segments are joined with the concat demuxer under
 `-c:v copy`, so only one segment is ever in memory and peak usage stays flat.
-`libx264` runs at `-threads 1` — its per-thread frame buffers are what tip a
+`libx264` runs at `-threads 1` â€” its per-thread frame buffers are what tip a
 small runner into OOM.
