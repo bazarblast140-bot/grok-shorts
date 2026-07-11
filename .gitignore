@@ -1,0 +1,11 @@
+# Never commit secrets or build output.
+.env
+*.key
+
+work/
+out/
+
+__pycache__/
+*.pyc
+.venv/
+venv/
