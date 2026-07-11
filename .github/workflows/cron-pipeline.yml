@@ -55,10 +55,14 @@ jobs:
           NUM_SCENES: ${{ vars.NUM_SCENES || '5' }}
           TARGET_SECONDS: ${{ vars.TARGET_SECONDS || '30' }}
           YOUTUBE_PRIVACY: ${{ vars.YOUTUBE_PRIVACY || 'public' }}
+          # free_image (free) | grok_image (~$0.10/video) | video (~$0.05/sec).
+          # Unset means free: a misconfigured run must never quietly spend money.
+          VISUAL_MODE: ${{ vars.VISUAL_MODE || 'free_image' }}
+          VIDEO_RESOLUTION: ${{ vars.VIDEO_RESOLUTION || '720p' }}
         run: python main.py run
 
       # The finished vertical mp4 plus a .json sidecar holding the title,
-      # description and tags â€” everything an upload step would need.
+      # description and tags — everything an upload step would need.
       - name: Publish the video as an artifact
         if: success()
         uses: actions/upload-artifact@v4
@@ -70,4 +74,4 @@ jobs:
 
       - name: Report failure
         if: failure()
-        run: echo "::error::Short build failed â€” open the 'Build the Short' step above."
+        run: echo "::error::Short build failed — open the 'Build the Short' step above."

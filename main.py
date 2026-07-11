@@ -1,5 +1,5 @@
 ﻿"""
-Grok Shorts â€” a zero-cost, memory-lean YouTube Shorts pipeline.
+Grok Shorts — a zero-cost, memory-lean YouTube Shorts pipeline.
 
 Pipeline:
     trending topic -> xAI Grok (script + image prompts) -> edge-tts voiceover
@@ -25,6 +25,14 @@ Environment:
     BG_VIDEO      (optional)  path to a looping background mp4; if set, images
                               are skipped entirely (cheapest + fastest path)
 
+    VISUAL_MODE   (optional)  what a run is worth, in one dial:
+                    free_image  Pollinations stills + Ken Burns   free  (default)
+                    grok_image  Grok stills + Ken Burns           ~$0.10/video
+                    video       Grok clips, real motion           ~$0.05/second
+                  A 25s Short is therefore ~$1.25 in video mode and ~$0.10 in
+                  grok_image mode. Motion is ~60x the cost of stills; nothing
+                  else in the pipeline comes close.
+
     UPLOAD_YOUTUBE   (optional) "false" to build only. Default: upload if a
                                 token.json is present.
     YOUTUBE_PRIVACY  (optional) public | unlisted | private. Default public.
@@ -36,12 +44,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -64,6 +72,19 @@ POLLINATIONS = "https://image.pollinations.ai/prompt/"
 
 VIDEO_W, VIDEO_H, FPS = 1080, 1920, 30
 
+# What the visuals cost, per xAI's published rates. Motion is the expensive
+# part by two orders of magnitude — the mode is a dial, not a detail.
+#   video       $0.05/second   -> a 25s Short costs ~$1.25
+#   grok_image  $0.02/image    -> a 5-scene Short costs ~$0.10
+#   free_image  free
+VISUAL_MODES = ("video", "grok_image", "free_image")
+VIDEO_COST_PER_SECOND = 0.05
+GROK_IMAGE_COST = 0.02
+
+# grok-imagine-video accepts 1–15s per clip, so a Short is stitched from one
+# clip per scene.
+CLIP_MIN_S, CLIP_MAX_S = 1, 15
+
 # YouTube OAuth. token.json is written by `reauth` locally; on the runner the
 # workflow materialises it from the TOKEN_JSON secret.
 TOKEN_PATH = ROOT / "token.json"
@@ -84,9 +105,15 @@ class Config:
     num_scenes: int = 5
     target_seconds: int = 30
     bg_video: str = ""
+    visual_mode: str = "free_image"
+    video_model: str = "grok-imagine-video"
+    video_resolution: str = "720p"
+    image_model: str = "grok-imagine-image"
     upload_youtube: bool = False
     youtube_privacy: str = "public"
     http_timeout: int = 90
+    poll_timeout_s: int = 15 * 60
+    poll_interval_s: int = 5
     retries: int = 3
 
     @classmethod
@@ -115,6 +142,16 @@ class Config:
             log.warning("YOUTUBE_PRIVACY=%r is invalid; using 'public'.", privacy)
             privacy = "public"
 
+        # Defaults to the free path: an unset variable must never quietly start
+        # spending money.
+        mode = os.environ.get("VISUAL_MODE", "free_image").strip().lower()
+        if mode not in VISUAL_MODES:
+            log.warning(
+                "VISUAL_MODE=%r is not one of %s; using 'free_image'.",
+                mode, ", ".join(VISUAL_MODES),
+            )
+            mode = "free_image"
+
         return cls(
             xai_api_key=key,
             xai_model=os.environ.get("XAI_MODEL", "grok-4.5").strip(),
@@ -123,6 +160,13 @@ class Config:
             num_scenes=_env_int("NUM_SCENES", 5, lo=3, hi=8),
             target_seconds=_env_int("TARGET_SECONDS", 30, lo=15, hi=60),
             bg_video=os.environ.get("BG_VIDEO", "").strip(),
+            visual_mode=mode,
+            video_model=os.environ.get(
+                "VIDEO_MODEL", "grok-imagine-video").strip(),
+            video_resolution=os.environ.get(
+                "VIDEO_RESOLUTION", "720p").strip(),
+            image_model=os.environ.get(
+                "IMAGE_MODEL", "grok-imagine-image").strip(),
             upload_youtube=upload,
             youtube_privacy=privacy,
         )
@@ -222,7 +266,7 @@ def audio_duration(path: Path) -> float:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 1 â€” trending topic
+#  Step 1 — trending topic
 # --------------------------------------------------------------------------- #
 FALLBACK_TOPICS = [
     "Why the ocean looks blue but water is clear",
@@ -262,7 +306,7 @@ def fetch_topic() -> str:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 2 â€” Grok writes the script
+#  Step 2 — Grok writes the script
 # --------------------------------------------------------------------------- #
 @dataclass
 class Script:
@@ -274,7 +318,7 @@ class Script:
 
 
 SYSTEM_PROMPT = (
-    "You are a viral short-form video writer. You reply with JSON only â€” "
+    "You are a viral short-form video writer. You reply with JSON only — "
     "no prose, no markdown fences."
 )
 
@@ -408,7 +452,7 @@ def write_script(cfg: Config, topic: str) -> Script:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 3 â€” voiceover (edge-tts, free)
+#  Step 3 — voiceover (edge-tts, free)
 # --------------------------------------------------------------------------- #
 def synthesize_voice(cfg: Config, narration: str, out_path: Path) -> float:
     import asyncio
@@ -432,8 +476,109 @@ def synthesize_voice(cfg: Config, narration: str, out_path: Path) -> float:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 4 â€” visuals (free)
+#  Step 4 — visuals
 # --------------------------------------------------------------------------- #
+def download(url: str, out_path: Path, timeout: int) -> None:
+    """Stream a remote file to disk."""
+    with requests.get(url, stream=True, timeout=timeout) as resp:
+        resp.raise_for_status()
+        with open(out_path, "wb") as handle:
+            for chunk in resp.iter_content(chunk_size=1 << 16):
+                handle.write(chunk)
+
+
+def xai_post(cfg: Config, path: str, payload: dict) -> dict:
+    """POST to the xAI API, turning the errors that matter into clear ones."""
+    resp = requests.post(
+        f"{XAI_BASE_URL}{path}",
+        headers={
+            "Authorization": f"Bearer {cfg.xai_api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=cfg.http_timeout,
+    )
+    if resp.status_code in (402, 403) and "credit" in resp.text.lower():
+        raise ConfigError(
+            "xAI reports no credits. Top up the SAME team this API key belongs "
+            "to — console.x.ai -> that team -> Billing -> Add credits. Credits "
+            "are per team, not per account."
+        )
+    if resp.status_code == 401:
+        raise ConfigError("xAI rejected the key (401). Check XAI_API_KEY.")
+    if resp.status_code >= 400:
+        raise PipelineError(f"xAI {path} [{resp.status_code}]: {resp.text[:200]}")
+    return resp.json()
+
+
+def grok_image(cfg: Config, prompt: str, out_path: Path) -> bool:
+    """One Grok-generated vertical still (~$0.02)."""
+    try:
+        data = xai_post(
+            cfg,
+            "/images/generations",
+            {"model": cfg.image_model, "prompt": prompt, "aspect_ratio": "9:16"},
+        )
+        download(data["data"][0]["url"], out_path, cfg.http_timeout)
+        return out_path.exists() and out_path.stat().st_size > 5000
+    except ConfigError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Grok image failed (%s).", str(exc)[:140])
+        return False
+
+
+def grok_video(cfg: Config, prompt: str, seconds: int, out_path: Path) -> bool:
+    """
+    One Grok-generated vertical clip with real motion (~$0.05 per second).
+
+    Submit, then poll until done. The model returns no audio — the edge-tts
+    voiceover is laid over the stitched clips at mux time.
+    """
+    try:
+        submitted = xai_post(
+            cfg,
+            "/videos/generations",
+            {
+                "model": cfg.video_model,
+                "prompt": prompt,
+                "duration": seconds,
+                "aspect_ratio": "9:16",
+                "resolution": cfg.video_resolution,
+            },
+        )
+        request_id = submitted.get("request_id") or submitted.get("id")
+        if not request_id:
+            raise PipelineError(f"No request_id: {str(submitted)[:160]}")
+
+        deadline = time.time() + cfg.poll_timeout_s
+        while time.time() < deadline:
+            time.sleep(cfg.poll_interval_s)
+            poll = requests.get(
+                f"{XAI_BASE_URL}/videos/{request_id}",
+                headers={"Authorization": f"Bearer {cfg.xai_api_key}"},
+                timeout=cfg.http_timeout,
+            )
+            if poll.status_code >= 400:
+                log.warning("Poll [%s]: %s", poll.status_code, poll.text[:120])
+                continue
+
+            data = poll.json()
+            status = str(data.get("status", "")).lower()
+            if status == "done":
+                download(data["video"]["url"], out_path, cfg.http_timeout)
+                return out_path.exists() and out_path.stat().st_size > 5000
+            if status in ("failed", "expired"):
+                raise PipelineError(f"Video {status}: {str(data)[:160]}")
+
+        raise PipelineError(f"Video timed out after {cfg.poll_timeout_s}s.")
+    except ConfigError:
+        raise  # no credits — retrying only wastes time
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Grok video failed (%s).", str(exc)[:140])
+        return False
+
+
 def fetch_image(prompt: str, out_path: Path, timeout: int) -> bool:
     """One free Pollinations (Flux) still. Returns False if it doesn't arrive."""
     url = (
@@ -453,31 +598,79 @@ def fetch_image(prompt: str, out_path: Path, timeout: int) -> bool:
     return False
 
 
-def render_images(cfg: Config, prompts: list[str], run_id: str) -> list[Path]:
-    """One still per scene. Survives individual misses; fails only if all miss."""
-    paths: list[Path] = []
+def render_visuals(
+    cfg: Config, prompts: list[str], run_id: str, duration: float
+) -> tuple[str, list[Path]]:
+    """
+    One asset per scene, in whichever mode is configured. Returns ("clip"|
+    "image", paths).
+
+    Motion costs about 60x what stills cost, so the mode is the single dial
+    that decides what a run is worth; each mode logs its own estimate before
+    spending anything.
+
+    Resilient per scene: a scene that will not render is dropped, and only an
+    empty result is fatal.
+    """
+    scenes = len(prompts)
+
+    if cfg.visual_mode == "video":
+        # Round up so the stitched video is never shorter than the voiceover —
+        # the final mux trims the tail with -shortest.
+        clip_s = max(CLIP_MIN_S, min(CLIP_MAX_S, math.ceil(duration / scenes)))
+        log.info(
+            "Visuals: Grok VIDEO — %d clips x %ds, about $%.2f this run.",
+            scenes, clip_s, scenes * clip_s * VIDEO_COST_PER_SECOND,
+        )
+        paths = []
+        for index, prompt in enumerate(prompts, 1):
+            target = WORK_DIR / f"clip_{run_id}_{index}.mp4"
+            log.info("Clip %d/%d (%ds)...", index, scenes, clip_s)
+            if grok_video(cfg, prompt, clip_s, target):
+                paths.append(target)
+            else:
+                log.warning("Scene %d has no clip; skipping it.", index)
+        if not paths:
+            raise PipelineError("Every scene clip failed to render.")
+        log.info("Clips: %d/%d rendered.", len(paths), scenes)
+        return "clip", paths
+
+    if cfg.visual_mode == "grok_image":
+        log.info(
+            "Visuals: Grok IMAGES — %d stills, about $%.2f this run.",
+            scenes, scenes * GROK_IMAGE_COST,
+        )
+    else:
+        log.info("Visuals: FREE images (Pollinations) — %d stills.", scenes)
+
+    paths = []
     for index, prompt in enumerate(prompts, 1):
         target = WORK_DIR / f"img_{run_id}_{index}.jpg"
-        log.info("Image %d/%d...", index, len(prompts))
+        log.info("Image %d/%d...", index, scenes)
         for attempt in range(1, 3):
-            if fetch_image(prompt, target, cfg.http_timeout):
+            ok = (
+                grok_image(cfg, prompt, target)
+                if cfg.visual_mode == "grok_image"
+                else fetch_image(prompt, target, cfg.http_timeout)
+            )
+            if ok:
                 paths.append(target)
                 break
             time.sleep(3 * attempt)  # the free tier rate-limits; back off
         else:
-            log.warning("Scene %d has no image; it will be skipped.", index)
+            log.warning("Scene %d has no image; skipping it.", index)
 
     if not paths:
         raise PipelineError(
-            "Every scene image failed. Pollinations may be down â€” set BG_VIDEO "
-            "to a looping mp4 to build the Short without generated stills."
+            "Every scene image failed. Set BG_VIDEO to a looping mp4 to build "
+            "the Short without generated stills."
         )
-    log.info("Images: %d/%d rendered.", len(paths), len(prompts))
-    return paths
+    log.info("Images: %d/%d rendered.", len(paths), scenes)
+    return "image", paths
 
 
 # --------------------------------------------------------------------------- #
-#  Step 5 â€” assembly (streaming; never holds frames in RAM)
+#  Step 5 — assembly (streaming; never holds frames in RAM)
 # --------------------------------------------------------------------------- #
 # One thread: libx264 allocates per-thread frame buffers, and on a small runner
 # that is what tips an encode into OOM. Encoding 1080x1920 single-threaded is
@@ -525,11 +718,35 @@ def background_segment(bg_video: Path, seconds: float, out_path: Path) -> None:
     )
 
 
+def clip_segment(clip: Path, out_path: Path) -> None:
+    """
+    Re-encode a Grok clip to the pipeline's exact format.
+
+    Grok returns 9:16 already, but at the requested resolution (720p by
+    default) — scaling every clip to identical dimensions and frame rate is
+    what lets the concat demuxer stream-copy them together afterwards.
+    """
+    chain = (
+        f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
+        f"crop={VIDEO_W}:{VIDEO_H},format=yuv420p"
+    )
+    run_ffmpeg(
+        ["-i", str(clip), "-vf", chain, "-an", *ENCODE, str(out_path)],
+        f"normalise {clip.name}",
+    )
+
+
 def assemble(
-    cfg: Config, images: list[Path], voice: Path, duration: float, out_path: Path
+    cfg: Config,
+    kind: str,
+    assets: list[Path],
+    voice: Path,
+    duration: float,
+    out_path: Path,
 ) -> Path:
     """
-    Build the final Short.
+    Build the final Short from `assets` — Grok clips ("clip") or stills
+    ("image").
 
     Encode each segment separately, then join with the concat demuxer and
     stream-copy the video. Only ever one segment is in flight, so peak memory
@@ -543,15 +760,23 @@ def assemble(
         segment = WORK_DIR / "seg_bg.mp4"
         background_segment(bg, duration, segment)
         segments.append(segment)
+    elif kind == "clip":
+        log.info(
+            "Assembling %d Grok clips at %dx%d...", len(assets), VIDEO_W, VIDEO_H
+        )
+        for index, clip in enumerate(assets, 1):
+            segment = WORK_DIR / f"seg_{index}.mp4"
+            clip_segment(clip, segment)
+            segments.append(segment)
     else:
         if bg:
             log.warning("BG_VIDEO %s not found; using generated stills.", bg)
-        per_scene = duration / len(images)
+        per_scene = duration / len(assets)
         log.info(
             "Assembling %d scenes x %.1fs at %dx%d...",
-            len(images), per_scene, VIDEO_W, VIDEO_H,
+            len(assets), per_scene, VIDEO_W, VIDEO_H,
         )
-        for index, image in enumerate(images, 1):
+        for index, image in enumerate(assets, 1):
             segment = WORK_DIR / f"seg_{index}.mp4"
             ken_burns_segment(image, per_scene, segment)
             segments.append(segment)
@@ -565,7 +790,7 @@ def assemble(
         ["-f", "concat", "-safe", "0", "-i", str(listing),
          "-i", str(voice),
          "-map", "0:v:0", "-map", "1:a:0",
-         "-c:v", "copy",            # segments already encoded â€” no re-encode
+         "-c:v", "copy",            # segments already encoded — no re-encode
          "-c:a", "aac", "-b:a", "128k",
          "-shortest", "-movflags", "+faststart",
          str(out_path)],
@@ -581,7 +806,7 @@ def assemble(
 
 
 # --------------------------------------------------------------------------- #
-#  Step 6 â€” YouTube upload
+#  Step 6 — YouTube upload
 # --------------------------------------------------------------------------- #
 def youtube_service():
     """An authorized YouTube client, refreshing token.json when it has expired."""
@@ -614,7 +839,7 @@ def youtube_service():
                     "The YouTube token is expired or revoked and cannot be "
                     "refreshed on a headless runner. Fix it in three steps: "
                     "(1) in Google Cloud Console set the OAuth consent screen to "
-                    "'In production' â€” while it is in 'Testing', Google expires "
+                    "'In production' — while it is in 'Testing', Google expires "
                     "refresh tokens after 7 days and the bot breaks every week; "
                     "(2) run `python main.py reauth` on your laptop; "
                     "(3) paste the new token.json into the TOKEN_JSON secret."
@@ -725,7 +950,7 @@ def reauth() -> None:
 #  Telegram
 # --------------------------------------------------------------------------- #
 def send_telegram(message: str) -> None:
-    """Best-effort status ping. Never raises â€” a dead bot must not fail a run."""
+    """Best-effort status ping. Never raises — a dead bot must not fail a run."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
@@ -773,12 +998,14 @@ def run() -> Path:
         voice = WORK_DIR / f"voice_{run_id}.mp3"
         duration = synthesize_voice(cfg, script.narration, voice)
 
-        images: list[Path] = []
+        kind, assets = "image", []
         if not (cfg.bg_video and Path(cfg.bg_video).exists()):
-            images = render_images(cfg, script.image_prompts, run_id)
+            kind, assets = render_visuals(
+                cfg, script.image_prompts, run_id, duration
+            )
 
         video = OUT_DIR / f"short_{run_id}.mp4"
-        assemble(cfg, images, voice, duration, video)
+        assemble(cfg, kind, assets, voice, duration, video)
 
         watch_url = ""
         if cfg.upload_youtube:
@@ -811,17 +1038,17 @@ def run() -> Path:
 
         log.info("RUN SUCCESS (id=%s) -> %s", run_id, video.name)
         send_telegram(
-            "âœ… Grok Short ready\n"
+            "✅ Grok Short ready\n"
             f"{script.title}\n"
             f"Topic: {topic}\n"
             f"Length: {duration:.0f}s\n"
-            + (watch_url or "Not uploaded â€” download it from the Actions artifact.")
+            + (watch_url or "Not uploaded — download it from the Actions artifact.")
         )
         return video
 
     except Exception as exc:
         send_telegram(
-            f"âŒ Grok Short FAILED (id={run_id})\n{type(exc).__name__}: "
+            f"❌ Grok Short FAILED (id={run_id})\n{type(exc).__name__}: "
             f"{str(exc)[:400]}"
         )
         raise
@@ -863,7 +1090,7 @@ def selftest() -> None:
 
     cfg = Config(xai_api_key="unused")
     video = OUT_DIR / "selftest.mp4"
-    assemble(cfg, [still, still], tone, audio_duration(tone), video)
+    assemble(cfg, "image", [still, still], tone, audio_duration(tone), video)
     log.info("SELFTEST PASSED -> %s", video)
 
 
