@@ -51,7 +51,6 @@ import re
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -67,7 +66,6 @@ OUT_DIR = ROOT / "out"
 WORK_DIR = ROOT / "work"
 
 XAI_BASE_URL = "https://api.x.ai/v1"
-TRENDS_RSS = "https://trends.google.com/trending/rss?geo=IN"
 POLLINATIONS = "https://image.pollinations.ai/prompt/"
 
 VIDEO_W, VIDEO_H, FPS = 1080, 1920, 30
@@ -90,10 +88,7 @@ CLIP_MIN_S, CLIP_MAX_S = 1, 15
 TOKEN_PATH = ROOT / "token.json"
 CLIENT_SECRET = ROOT / "client_secret.json"
 YOUTUBE_SCOPE = ["https://www.googleapis.com/auth/youtube.upload"]
-YOUTUBE_CATEGORY_ID = "27"  # Education
-
-# Trend titles that are queries, not story material.
-TREND_SKIP = ("weather", "result", "score", "vs", "live", "rate", "login")
+YOUTUBE_CATEGORY_ID = "1"  # Film & Animation
 
 
 @dataclass(frozen=True)
@@ -266,39 +261,41 @@ def audio_duration(path: Path) -> float:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 1 — trending topic
+#  Step 1 — story topic
 # --------------------------------------------------------------------------- #
+# Topics come from a bank of invented vegetable characters, NOT from Google
+# Trends. Trends surfaces real people and live news, and a model asked for a
+# viral hook about a real person will simply invent one — which is how this
+# pipeline once published a fabricated "shocking truth" about a named actor.
+# Fictional characters make that failure impossible by construction.
+TOPICS_FILE = ROOT / "story_topics.json"
+
 FALLBACK_TOPICS = [
-    "Why the ocean looks blue but water is clear",
-    "How honeybees decide where to build a hive",
-    "The reason your phone battery drains faster in winter",
-    "What actually happens when a plane hits turbulence",
-    "Why some people never seem to feel cold",
-    "How ancient builders moved stones without machines",
+    "आलू ने मिर्ची पर भरोसा किया, मिर्ची ने पीठ पीछे धोखा दिया",
+    "गरीब आलू की नौकरी छूट गई, घर चलाना मुश्किल हो गया",
+    "खीरा और मूली की अनोखी प्रेम कहानी जिसे किसी ने नहीं समझा",
+    "घमंडी शिमला मिर्च को उसके घमंड ने ही गिरा दिया",
 ]
 
 
-def fetch_topic() -> str:
-    """A live Google Trends (IN) title, or an evergreen fallback."""
+def pick_topic() -> str:
+    """One story seed from the bank."""
     try:
-        resp = requests.get(TRENDS_RSS, timeout=20)
-        resp.raise_for_status()
-        titles = [
-            (item.findtext("title") or "").strip()
-            for item in ET.fromstring(resp.content).iter("item")
+        bank = json.loads(TOPICS_FILE.read_text(encoding="utf-8"))
+        pool = [
+            topic
+            for key, topics in bank.items()
+            if not key.startswith("_")
+            for topic in topics
         ]
-        usable = [
-            t
-            for t in titles
-            if t and not any(bad in t.lower() for bad in TREND_SKIP)
-        ]
-        if usable:
-            topic = random.choice(usable[:8])  # top-of-list, but varied
-            log.info("Topic (google-trends): %s", topic)
+        if pool:
+            topic = random.choice(pool)
+            log.info("Topic: %s", topic)
             return topic
-        log.warning("Trends returned nothing usable; using fallback bank.")
+        log.warning("%s has no topics; using the built-in bank.", TOPICS_FILE.name)
     except Exception as exc:  # noqa: BLE001
-        log.warning("Trends fetch failed (%s); using fallback bank.", str(exc)[:120])
+        log.warning("Could not read %s (%s); using the built-in bank.",
+                    TOPICS_FILE.name, str(exc)[:120])
 
     topic = random.choice(FALLBACK_TOPICS)
     log.info("Topic (fallback): %s", topic)
@@ -318,34 +315,94 @@ class Script:
 
 
 SYSTEM_PROMPT = (
-    "You are a viral short-form video writer. You reply with JSON only — "
-    "no prose, no markdown fences."
+    "You write emotional Hindi cartoon stories about invented vegetable "
+    "characters. You reply with JSON only — no prose, no markdown fences."
 )
 
-SCRIPT_PROMPT = """Write a {seconds}-second vertical YouTube Short about: {topic}
+# Hard content boundary. The bank only holds fictional characters, but a model
+# reaching for a viral hook will drift toward real names and real news unless
+# it is told not to. Stated once, plainly, at the top of the prompt.
+CONTENT_RULES = """ABSOLUTE RULES — breaking any of these makes the video unusable:
+- Every character is an INVENTED VEGETABLE. Never mention, imply, or build on a
+  real person, celebrity, actor, politician, brand, company or news event.
+- Never present anything as real news, a real fact, or a "shocking truth".
+  This is an openly fictional cartoon story and nothing else.
+- Keep it family-friendly: sad and emotional is good; violence, death, romance
+  beyond innocent affection, politics and religion are not."""
 
-Structure the narration as HOOK -> BODY -> CTA:
-- HOOK: first 3 seconds. A surprising claim or question that stops the scroll.
-- BODY: the payoff. Concrete, specific, one clear idea.
-- CTA: a short line inviting a follow or comment.
+# One of these is drawn at random per run and handed to the model as the shape
+# of the opening line. Left to itself the model settles into one favourite
+# opening and every Short starts the same way, which is what makes a feed of
+# them feel machine-made.
+HOOK_STYLES = [
+    "a blunt statement of the injustice, naming the character who did it",
+    "a question fired straight at the viewer about what they would have done",
+    "the last line of the story, told first — then rewind into it",
+    "a single line of raw dialogue shouted by a character mid-scene",
+    "a countdown of what the character lost, one thing at a time",
+    "an innocent, ordinary moment — with one detail that is clearly wrong",
+    "a promise to the viewer that they will not see the ending coming",
+    "the villain's cruel line, quoted with no introduction at all",
+    "a number or a time that sounds small but lands hard",
+    "a warm, happy opening that turns cold in the very next sentence",
+]
+
+SCRIPT_PROMPT = """{rules}
+
+Write a {seconds}-second vertical Hindi YouTube Short — an emotional 3D-cartoon
+vegetable story, in the style of channels like "Veggie Shorts TV".
+
+STORY SEED: {topic}
+
+Structure the narration as HOOK -> STORY -> TWIST -> FEELING:
+- HOOK (first 3 seconds): a line that stops the scroll. For THIS video the hook
+  must take this shape: {hook_style}
+  Never open with "रुको". Do not reuse a stock opener — this hook must feel
+  written for this story alone.
+- STORY: what happens, told simply and concretely.
+- TWIST: the betrayal, the sacrifice, or the moment that turns it.
+- FEELING: a one-line emotional landing or moral. End with a short question to
+  the viewer so they comment.
 
 Rules:
-- Narration must be ONE flowing spoken paragraph (no labels, no stage
-  directions, no emoji) of roughly {words} words so it reads aloud in about
-  {seconds} seconds.
-- Write the narration in natural conversational Hindi using Devanagari script,
-  keeping common English words as-is where a Hindi speaker would use them.
-- Write exactly {scenes} image_prompts, one per scene, in ENGLISH. Each is a
-  vivid, self-contained description of a cinematic 3D-animated frame with no
-  text, letters, or logos in the image. Keep any recurring character described
-  identically across scenes so the video looks consistent.
-- title: under 70 characters, curiosity-driven, may use one emoji.
-- description: 2 sentences, then a line of relevant hashtags.
-- tags: 8 to 12 lowercase keyword strings.
+- Narration: ONE flowing spoken paragraph in natural conversational Hindi
+  (Devanagari), roughly {words} words so it reads aloud in about {seconds}
+  seconds. No labels, no stage directions, no emoji.
+- Pick 2 or 3 vegetable characters and give them simple Hindi names. Decide
+  their look ONCE (colour, clothes, eyes, expression) and describe them with
+  those SAME words in every image_prompt, so the character stays recognisable
+  across the video.
+- Write exactly {scenes} image_prompts, one per scene, in ENGLISH. Each: a
+  cinematic 3D Pixar-style animated frame of expressive vegetable characters
+  with big emotional eyes, in an Indian village or market setting, dramatic
+  lighting, vertical 9:16 composition. Absolutely NO text, letters, words,
+  numbers or logos inside the image.
+- Each image_prompt must carry the emotion of its beat (sad, betrayed, hopeful).
+
+SEO — this decides whether anyone sees the video:
+- title: under 90 characters. Hindi + a couple of English keywords, 1-2 emoji,
+  and a curiosity gap. Example shape:
+  "😢 गरीब आलू की कहानी | Emotional Vegetable Story | Moral Cartoon"
+- description: 2-3 sentences that retell the hook and invite a comment.
+- tags: 12 lowercase keyword strings mixing Hindi-in-English and English
+  (e.g. "veggie story", "emotional cartoon", "hindi kahani", "moral story").
 
 Return exactly this JSON shape:
 {{"title": "...", "description": "...", "tags": ["..."],
   "narration": "...", "image_prompts": ["...", "..."]}}"""
+
+# Appended to whatever the model writes, so every upload carries the channel's
+# core keywords even on a run where the model was stingy with tags.
+SEO_BASE_TAGS = [
+    "veggie shorts", "vegetable story", "emotional story", "hindi kahani",
+    "moral story", "cartoon story", "3d animation", "sabzi cartoon",
+    "hindi story", "veggie cartoon",
+]
+
+SEO_HASHTAGS = (
+    "#shorts #veggieshorts #vegetablestory #emotionalstory #hindikahani "
+    "#moralstory #cartoon #3danimation #sabzi #hindistory #kahani #viral"
+)
 
 
 def extract_json(text: str) -> dict:
@@ -410,11 +467,16 @@ def call_grok(cfg: Config, messages: list[dict], temperature: float = 0.8) -> st
 
 def write_script(cfg: Config, topic: str) -> Script:
     words = int(cfg.target_seconds * 2.6)  # ~2.6 spoken words/sec
+    hook_style = random.choice(HOOK_STYLES)
+    log.info("Hook style: %s", hook_style)
+
     prompt = SCRIPT_PROMPT.format(
+        rules=CONTENT_RULES,
         topic=topic,
         seconds=cfg.target_seconds,
         words=words,
         scenes=cfg.num_scenes,
+        hook_style=hook_style,
     )
     raw = call_grok(
         cfg,
@@ -422,6 +484,8 @@ def write_script(cfg: Config, topic: str) -> Script:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
+        # A fresh hook every run matters more here than a safe one.
+        temperature=1.0,
     )
     data = extract_json(raw)
 
@@ -437,10 +501,21 @@ def write_script(cfg: Config, topic: str) -> Script:
         prompts.append(prompts[-1])
     prompts = prompts[: cfg.num_scenes]
 
+    # Fold in the channel's own keywords, so SEO does not depend on the model
+    # being generous on any given run. Model tags lead; base tags fill.
+    tags = [str(t).strip().lower() for t in data.get("tags", []) if str(t).strip()]
+    for base in SEO_BASE_TAGS:
+        if base not in tags:
+            tags.append(base)
+
+    description = str(data.get("description", "")).strip()
+    if SEO_HASHTAGS.split()[0] not in description:
+        description = f"{description}\n\n{SEO_HASHTAGS}"
+
     script = Script(
         title=str(data.get("title", topic)).strip()[:100],
-        description=str(data.get("description", "")).strip(),
-        tags=[str(t).strip() for t in data.get("tags", []) if str(t).strip()][:12],
+        description=description,
+        tags=tags[:15],  # YouTube ignores the tail; 15 is plenty
         narration=narration,
         image_prompts=prompts,
     )
@@ -992,7 +1067,7 @@ def run() -> Path:
     log.info("=" * 62)
 
     try:
-        topic = fetch_topic()
+        topic = pick_topic()
         script = write_script(cfg, topic)
 
         voice = WORK_DIR / f"voice_{run_id}.mp3"
