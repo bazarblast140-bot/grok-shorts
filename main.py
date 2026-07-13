@@ -379,6 +379,17 @@ Rules:
   numbers or logos inside the image.
 - Each image_prompt must carry the emotion of its beat (sad, betrayed, hopeful).
 
+- image_prompts[0] IS THE VISUAL HOOK and follows different rules from the rest.
+  It is what the viewer sees in the first 2-3 seconds, and it decides whether
+  they stay. It must NOT be a calm establishing shot, a wide village view, or a
+  character simply standing there — those get scrolled past.
+  Make it an EXTREME CLOSE-UP on the face at the story's most emotional instant:
+  the tear about to fall, the eyes wide in betrayal, the mouth open mid-shout.
+  Fill the frame with that face. High contrast, dramatic lighting, shallow depth
+  of field. Take the moment from the peak of the story, even though the
+  narration has not reached it yet — the picture spoils nothing, it only pulls.
+  The spoken hook and this frame must hit at the same time.
+
 SEO — this decides whether anyone sees the video:
 - title: under 90 characters. Hindi + a couple of English keywords, 1-2 emoji,
   and a curiosity gap. Example shape:
