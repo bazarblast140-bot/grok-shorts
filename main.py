@@ -171,6 +171,11 @@ class ConfigError(RuntimeError):
     """Something the operator must fix (missing key, bad value)."""
 
 
+class OutOfCredits(ConfigError):
+    """The xAI team's balance ran out. Distinct from ConfigError because a run
+    that has already paid for some clips should still ship a video from them."""
+
+
 class PipelineError(RuntimeError):
     """A step failed after its retries were exhausted."""
 
@@ -585,7 +590,7 @@ def xai_post(cfg: Config, path: str, payload: dict) -> dict:
         timeout=cfg.http_timeout,
     )
     if resp.status_code in (402, 403) and "credit" in resp.text.lower():
-        raise ConfigError(
+        raise OutOfCredits(
             "xAI reports no credits. Top up the SAME team this API key belongs "
             "to — console.x.ai -> that team -> Billing -> Add credits. Credits "
             "are per team, not per account."
@@ -645,6 +650,13 @@ def grok_video(cfg: Config, prompt: str, seconds: int, out_path: Path) -> bool:
                 headers={"Authorization": f"Bearer {cfg.xai_api_key}"},
                 timeout=cfg.http_timeout,
             )
+            # Credits can run dry mid-generation, and then every poll 403s.
+            # Retrying that for the full timeout burns 15 minutes to learn
+            # something the first reply already said.
+            if poll.status_code in (402, 403) and "credit" in poll.text.lower():
+                raise OutOfCredits(
+                    "xAI ran out of credits partway through this video."
+                )
             if poll.status_code >= 400:
                 log.warning("Poll [%s]: %s", poll.status_code, poll.text[:120])
                 continue
@@ -712,10 +724,24 @@ def render_visuals(
         for index, prompt in enumerate(prompts, 1):
             target = WORK_DIR / f"clip_{run_id}_{index}.mp4"
             log.info("Clip %d/%d (%ds)...", index, scenes, clip_s)
-            if grok_video(cfg, prompt, clip_s, target):
-                paths.append(target)
-            else:
-                log.warning("Scene %d has no clip; skipping it.", index)
+            try:
+                if grok_video(cfg, prompt, clip_s, target):
+                    paths.append(target)
+                else:
+                    log.warning("Scene %d has no clip; skipping it.", index)
+            except OutOfCredits:
+                # The clips already rendered are already paid for. Throwing the
+                # run away here would bin that money and post nothing; a shorter
+                # video is strictly better than no video.
+                if not paths:
+                    raise
+                log.warning(
+                    "Out of credits after %d/%d clips — building the video from "
+                    "the clips already paid for. Top up to get full-length "
+                    "videos again.",
+                    len(paths), scenes,
+                )
+                break
         if not paths:
             raise PipelineError("Every scene clip failed to render.")
         log.info("Clips: %d/%d rendered.", len(paths), scenes)
@@ -854,6 +880,23 @@ def assemble(
             segment = WORK_DIR / f"seg_{index}.mp4"
             clip_segment(clip, segment)
             segments.append(segment)
+
+        # A run that ran out of credits ships fewer clips than the voiceover
+        # needs. Without this the -shortest mux would cut the story off
+        # mid-sentence; hold the last frame instead so the story is heard out.
+        shot = sum(audio_duration(s) for s in segments)
+        gap = duration - shot
+        if gap > 0.3:
+            log.info("Video is %.1fs short of the voiceover; holding the last "
+                     "frame to cover it.", gap)
+            held = WORK_DIR / "seg_held.mp4"
+            run_ffmpeg(
+                ["-i", str(segments[-1]),
+                 "-vf", f"tpad=stop_mode=clone:stop_duration={gap + 0.2:.2f}",
+                 "-an", *ENCODE, str(held)],
+                "hold last frame",
+            )
+            segments[-1] = held
     else:
         if bg:
             log.warning("BG_VIDEO %s not found; using generated stills.", bg)
