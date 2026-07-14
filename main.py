@@ -317,6 +317,20 @@ class Script:
     tags: list[str]
     narration: str
     image_prompts: list[str] = field(default_factory=list)
+    mood: str = "sad"
+
+
+# Background music, chosen to match the story. Drop tracks into
+# assets/music/<mood>/ and they are picked up automatically; with the folders
+# empty the pipeline simply runs voiceover-only, exactly as it does today.
+#
+# Source the tracks from the YouTube Audio Library (studio.youtube.com ->
+# Audio Library). It is the only library that carries no Content ID risk on the
+# channel that uploads them.
+MUSIC_DIR = ROOT / "assets" / "music"
+MOODS = ("sad", "hopeful", "tense", "happy")
+MUSIC_VOLUME = 0.10   # under the voice, never over it
+MUSIC_FADE_S = 2.0
 
 
 SYSTEM_PROMPT = (
@@ -402,9 +416,11 @@ SEO — this decides whether anyone sees the video:
 - description: 2-3 sentences that retell the hook and invite a comment.
 - tags: 12 lowercase keyword strings mixing Hindi-in-English and English
   (e.g. "veggie story", "emotional cartoon", "hindi kahani", "moral story").
+- mood: the ONE word that best fits the background music this story wants —
+  exactly one of: sad, hopeful, tense, happy.
 
 Return exactly this JSON shape:
-{{"title": "...", "description": "...", "tags": ["..."],
+{{"title": "...", "description": "...", "tags": ["..."], "mood": "sad",
   "narration": "...", "image_prompts": ["...", "..."]}}"""
 
 # Appended to whatever the model writes, so every upload carries the channel's
@@ -528,12 +544,17 @@ def write_script(cfg: Config, topic: str) -> Script:
     if SEO_HASHTAGS.split()[0] not in description:
         description = f"{description}\n\n{SEO_HASHTAGS}"
 
+    mood = str(data.get("mood", "")).strip().lower()
+    if mood not in MOODS:
+        mood = "sad"  # the bank leans emotional; this is the safe default
+
     script = Script(
         title=str(data.get("title", topic)).strip()[:100],
         description=description,
         tags=tags[:15],  # YouTube ignores the tail; 15 is plenty
         narration=narration,
         image_prompts=prompts,
+        mood=mood,
     )
     log.info(
         "Script ready: %r | %d chars narration | %d scenes",
@@ -830,6 +851,25 @@ def background_segment(bg_video: Path, seconds: float, out_path: Path) -> None:
     )
 
 
+def pick_music(mood: str) -> Path | None:
+    """A track matching the story's mood, or None to run voiceover-only."""
+    for folder in (MUSIC_DIR / mood, MUSIC_DIR):
+        if not folder.is_dir():
+            continue
+        tracks = sorted(
+            p for p in folder.glob("*")
+            if p.is_file() and p.suffix.lower() in (".mp3", ".m4a", ".wav", ".ogg")
+        )
+        if tracks:
+            track = random.choice(tracks)
+            where = "mood" if folder.name == mood else "shared"
+            log.info("Music (%s/%s): %s", where, mood, track.name)
+            return track
+
+    log.info("No music in %s; voiceover only.", MUSIC_DIR)
+    return None
+
+
 def clip_segment(clip: Path, out_path: Path) -> None:
     """
     Re-encode a Grok clip to the pipeline's exact format.
@@ -855,10 +895,11 @@ def assemble(
     voice: Path,
     duration: float,
     out_path: Path,
+    music: Path | None = None,
 ) -> Path:
     """
     Build the final Short from `assets` — Grok clips ("clip") or stills
-    ("image").
+    ("image") — with `music` bedded under the voiceover if given.
 
     Encode each segment separately, then join with the concat demuxer and
     stream-copy the video. Only ever one segment is in flight, so peak memory
@@ -915,16 +956,37 @@ def assemble(
         "".join(f"file '{s.as_posix()}'\n" for s in segments), encoding="utf-8"
     )
 
-    run_ffmpeg(
-        ["-f", "concat", "-safe", "0", "-i", str(listing),
-         "-i", str(voice),
-         "-map", "0:v:0", "-map", "1:a:0",
-         "-c:v", "copy",            # segments already encoded — no re-encode
-         "-c:a", "aac", "-b:a", "128k",
-         "-shortest", "-movflags", "+faststart",
-         str(out_path)],
-        "final mux",
-    )
+    mux = [
+        "-f", "concat", "-safe", "0", "-i", str(listing),
+        "-i", str(voice),
+    ]
+
+    if music is None:
+        mux += ["-map", "0:v:0", "-map", "1:a:0"]
+    else:
+        # Loop the track to cover the video, duck it well under the voice, and
+        # fade it out at the end. `duration=first` keeps the mix as long as the
+        # voiceover, not as long as the (looping) music.
+        fade_at = max(0.0, duration - MUSIC_FADE_S)
+        mux += [
+            "-stream_loop", "-1", "-i", str(music),
+            "-filter_complex",
+            (
+                f"[2:a]volume={MUSIC_VOLUME},"
+                f"afade=t=out:st={fade_at:.2f}:d={MUSIC_FADE_S}[bed];"
+                "[1:a][bed]amix=inputs=2:duration=first:dropout_transition=0"
+                "[aout]"
+            ),
+            "-map", "0:v:0", "-map", "[aout]",
+        ]
+
+    mux += [
+        "-c:v", "copy",            # segments already encoded — no re-encode
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest", "-movflags", "+faststart",
+        str(out_path),
+    ]
+    run_ffmpeg(mux, "final mux")
 
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise PipelineError("Assembly produced an empty file.")
@@ -1134,7 +1196,10 @@ def run() -> Path:
             )
 
         video = OUT_DIR / f"short_{run_id}.mp4"
-        assemble(cfg, kind, assets, voice, duration, video)
+        assemble(
+            cfg, kind, assets, voice, duration, video,
+            music=pick_music(script.mood),
+        )
 
         watch_url = ""
         if cfg.upload_youtube:
