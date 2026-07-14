@@ -97,6 +97,8 @@ class Config:
     xai_model: str = "grok-4.5"
     tts_voice: str = "hi-IN-SwaraNeural"
     tts_rate: str = "+12%"
+    tts_provider: str = "edge"
+    grok_voice: str = "rex"
     num_scenes: int = 5
     target_seconds: int = 30
     bg_video: str = ""
@@ -147,9 +149,17 @@ class Config:
             )
             mode = "free_image"
 
+        provider = os.environ.get("TTS_PROVIDER", "edge").strip().lower()
+        if provider not in ("edge", "grok"):
+            log.warning("TTS_PROVIDER=%r is not 'edge' or 'grok'; using 'edge'.",
+                        provider)
+            provider = "edge"
+
         return cls(
             xai_api_key=key,
             xai_model=os.environ.get("XAI_MODEL", "grok-4.5").strip(),
+            tts_provider=provider,
+            grok_voice=os.environ.get("GROK_VOICE", "rex").strip().lower(),
             tts_voice=os.environ.get("TTS_VOICE", "hi-IN-SwaraNeural").strip(),
             tts_rate=os.environ.get("TTS_RATE", "+12%").strip(),
             num_scenes=_env_int("NUM_SCENES", 5, lo=3, hi=8),
@@ -564,14 +574,19 @@ def write_script(cfg: Config, topic: str) -> Script:
 
 
 # --------------------------------------------------------------------------- #
-#  Step 3 — voiceover (edge-tts, free)
+#  Step 3 — voiceover
 # --------------------------------------------------------------------------- #
-def synthesize_voice(cfg: Config, narration: str, out_path: Path) -> float:
+# Grok's TTS is warmer than edge-tts on Hindi and costs $15 per million
+# characters — about a rupee a month at one video a day. Voices: ara, eve, leo,
+# rex, sal.
+GROK_VOICES = ("ara", "eve", "leo", "rex", "sal")
+GROK_TTS_SPEED = 1.1  # a touch quicker; a slow read loses Shorts viewers
+
+
+def edge_voice(cfg: Config, narration: str, out_path: Path) -> None:
     import asyncio
 
     import edge_tts
-
-    log.info("TTS: %s (rate %s)...", cfg.tts_voice, cfg.tts_rate)
 
     async def _run() -> None:
         await edge_tts.Communicate(
@@ -579,8 +594,48 @@ def synthesize_voice(cfg: Config, narration: str, out_path: Path) -> float:
         ).save(str(out_path))
 
     asyncio.run(_run())
+
+
+def grok_voice_tts(cfg: Config, narration: str, out_path: Path) -> None:
+    """xAI TTS. Returns raw audio bytes, so write them straight to disk."""
+    voice = cfg.grok_voice if cfg.grok_voice in GROK_VOICES else "rex"
+    resp = requests.post(
+        f"{XAI_BASE_URL}/tts",
+        headers={
+            "Authorization": f"Bearer {cfg.xai_api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "text": narration,
+            "language": "hi",
+            "voice_id": voice,
+            "speed": GROK_TTS_SPEED,
+        },
+        timeout=cfg.http_timeout,
+    )
+    if resp.status_code in (402, 403) and "credit" in resp.text.lower():
+        raise OutOfCredits("xAI has no credits left for the voiceover.")
+    resp.raise_for_status()
+    out_path.write_bytes(resp.content)
+
+
+def synthesize_voice(cfg: Config, narration: str, out_path: Path) -> float:
+    if cfg.tts_provider == "grok":
+        log.info("TTS: Grok voice %r...", cfg.grok_voice)
+        try:
+            grok_voice_tts(cfg, narration, out_path)
+        except Exception as exc:  # noqa: BLE001
+            # A voice is not worth losing the video over: edge-tts is free and
+            # always available, so fall back rather than fail the run.
+            log.warning("Grok TTS failed (%s); falling back to edge-tts.",
+                        str(exc)[:140])
+            edge_voice(cfg, narration, out_path)
+    else:
+        log.info("TTS: edge %s (rate %s)...", cfg.tts_voice, cfg.tts_rate)
+        edge_voice(cfg, narration, out_path)
+
     if not out_path.exists() or out_path.stat().st_size == 0:
-        raise PipelineError("edge-tts produced an empty audio file.")
+        raise PipelineError("TTS produced an empty audio file.")
 
     duration = audio_duration(out_path)
     log.info("TTS: voiceover ready (%.1fs)", duration)
