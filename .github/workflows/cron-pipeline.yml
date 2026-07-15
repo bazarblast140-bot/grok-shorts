@@ -51,7 +51,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           XAI_MODEL: ${{ vars.XAI_MODEL || 'grok-4.5' }}
+          # Voice: edge (free) or grok. GROK_VOICE ara|eve|leo|rex|sal;
+          # GROK_SPEED 0.7-1.5.
+          TTS_PROVIDER: ${{ vars.TTS_PROVIDER || 'edge' }}
           TTS_VOICE: ${{ vars.TTS_VOICE || 'hi-IN-SwaraNeural' }}
+          GROK_VOICE: ${{ vars.GROK_VOICE || 'rex' }}
+          GROK_SPEED: ${{ vars.GROK_SPEED || '1.0' }}
           NUM_SCENES: ${{ vars.NUM_SCENES || '5' }}
           TARGET_SECONDS: ${{ vars.TARGET_SECONDS || '30' }}
           YOUTUBE_PRIVACY: ${{ vars.YOUTUBE_PRIVACY || 'public' }}
