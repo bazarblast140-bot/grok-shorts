@@ -352,7 +352,7 @@ class Script:
 # channel that uploads them.
 MUSIC_DIR = ROOT / "assets" / "music"
 MOODS = ("sad", "hopeful", "tense", "happy")
-MUSIC_VOLUME = 0.10   # under the voice, never over it
+MUSIC_VOLUME = 0.05   # well under the narration — a faint bed, never competing
 MUSIC_FADE_S = 2.0
 
 
@@ -422,15 +422,17 @@ Rules:
 - Each image_prompt must carry the emotion of its beat (sad, betrayed, hopeful).
 
 - image_prompts[0] IS THE VISUAL HOOK and follows different rules from the rest.
-  It is what the viewer sees in the first 2-3 seconds, and it decides whether
-  they stay. It must NOT be a calm establishing shot, a wide village view, or a
-  character simply standing there — those get scrolled past.
-  Make it an EXTREME CLOSE-UP on the face at the story's most emotional instant:
-  the tear about to fall, the eyes wide in betrayal, the mouth open mid-shout.
-  Fill the frame with that face. High contrast, dramatic lighting, shallow depth
-  of field. Take the moment from the peak of the story, even though the
-  narration has not reached it yet — the picture spoils nothing, it only pulls.
-  The spoken hook and this frame must hit at the same time.
+  It is what the viewer sees in the first 2-3 seconds and it decides whether they
+  stay, so it must be FULL OF MOTION AND ACTION from the very first frame. It
+  must NOT be a calm establishing shot, a wide village view, or a character
+  sitting still or crying quietly — those get scrolled past.
+  Make it the most DYNAMIC, high-energy instant of the whole story, caught
+  mid-movement: a character running, falling, being shoved, spinning around,
+  something crashing or flying, a sudden reveal — with a strong fast camera
+  push-in. Describe the movement explicitly (e.g. "sprinting toward camera",
+  "stumbling backward", "whirling around in shock") so the animation moves
+  immediately. Take this peak moment even though the narration has not reached it
+  yet — it only pulls the viewer in. The spoken hook and this motion hit together.
 
 SEO — this decides whether anyone sees the video:
 - title: under 90 characters. Hindi + a couple of English keywords, 1-2 emoji,
