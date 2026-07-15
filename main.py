@@ -99,6 +99,7 @@ class Config:
     tts_rate: str = "+12%"
     tts_provider: str = "edge"
     grok_voice: str = "rex"
+    grok_speed: float = 1.0
     num_scenes: int = 5
     target_seconds: int = 30
     bg_video: str = ""
@@ -160,6 +161,7 @@ class Config:
             xai_model=os.environ.get("XAI_MODEL", "grok-4.5").strip(),
             tts_provider=provider,
             grok_voice=os.environ.get("GROK_VOICE", "rex").strip().lower(),
+            grok_speed=_env_float("GROK_SPEED", 1.0, lo=0.7, hi=1.5),
             tts_voice=os.environ.get("TTS_VOICE", "hi-IN-SwaraNeural").strip(),
             tts_rate=os.environ.get("TTS_RATE", "+12%").strip(),
             num_scenes=_env_int("NUM_SCENES", 5, lo=3, hi=8),
@@ -198,6 +200,17 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
         return max(lo, min(hi, int(raw)))
     except ValueError:
         log.warning("%s=%r is not a number; using %d.", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(lo, min(hi, float(raw)))
+    except ValueError:
+        log.warning("%s=%r is not a number; using %s.", name, raw, default)
         return default
 
 
@@ -580,7 +593,6 @@ def write_script(cfg: Config, topic: str) -> Script:
 # characters — about a rupee a month at one video a day. Voices: ara, eve, leo,
 # rex, sal.
 GROK_VOICES = ("ara", "eve", "leo", "rex", "sal")
-GROK_TTS_SPEED = 1.1  # a touch quicker; a slow read loses Shorts viewers
 
 
 def edge_voice(cfg: Config, narration: str, out_path: Path) -> None:
@@ -609,7 +621,7 @@ def grok_voice_tts(cfg: Config, narration: str, out_path: Path) -> None:
             "text": narration,
             "language": "hi",
             "voice_id": voice,
-            "speed": GROK_TTS_SPEED,
+            "speed": cfg.grok_speed,
         },
         timeout=cfg.http_timeout,
     )
