@@ -1,82 +1,28 @@
-﻿name: Grok Shorts
+name: Daily Grok Shorts Pipeline
 
 on:
-  # Morning and evening: 08:00 and 18:00 IST (UTC+5:30).
-  # GitHub's scheduler is best-effort and often runs late or skips under load.
-  # For punctual runs, point an external trigger (e.g. cron-job.org) at this
-  # workflow's dispatch endpoint instead and delete the schedule below.
   schedule:
-    - cron: "30 2 * * *"
-    - cron: "30 12 * * *"
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
-# A late run must never pile on top of a running one.
-concurrency:
-  group: grok-shorts
-  cancel-in-progress: false
-
 jobs:
-  build-short:
+  run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
     steps:
-      - name: Check out the code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-
-      - name: Install ffmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
-
-      - name: Install Python packages
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install dependencies
         run: pip install -r requirements.txt
-
-      # The YouTube credentials live in a secret, never in the repo. printf (not
-      # echo) keeps the JSON byte-exact.
-      - name: Write the YouTube token
-        env:
-          TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
-        run: printf '%s' "$TOKEN_JSON" > token.json
-
-      - name: Build and upload the Short
+      - name: Run Pipeline
         env:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          XAI_MODEL: ${{ vars.XAI_MODEL || 'grok-4.5' }}
-          # Voice: edge (free) or grok. GROK_VOICE ara|eve|leo|rex|sal;
-          # GROK_SPEED 0.7-1.5.
-          TTS_PROVIDER: ${{ vars.TTS_PROVIDER || 'edge' }}
-          TTS_VOICE: ${{ vars.TTS_VOICE || 'hi-IN-SwaraNeural' }}
-          GROK_VOICE: ${{ vars.GROK_VOICE || 'rex' }}
-          GROK_SPEED: ${{ vars.GROK_SPEED || '1.0' }}
-          NUM_SCENES: ${{ vars.NUM_SCENES || '5' }}
-          TARGET_SECONDS: ${{ vars.TARGET_SECONDS || '30' }}
-          YOUTUBE_PRIVACY: ${{ vars.YOUTUBE_PRIVACY || 'public' }}
-          # free_image (free) | grok_image (~$0.10/video) | video (~$0.05/sec).
-          # Unset means free: a misconfigured run must never quietly spend money.
-          VISUAL_MODE: ${{ vars.VISUAL_MODE || 'free_image' }}
-          VIDEO_RESOLUTION: ${{ vars.VIDEO_RESOLUTION || '720p' }}
-        run: python main.py run
-
-      # The finished vertical mp4 plus a .json sidecar holding the title,
-      # description and tags — everything an upload step would need.
-      - name: Publish the video as an artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: short-${{ github.run_number }}
-          path: out/
-          retention-days: 14
-          if-no-files-found: error
-
-      - name: Report failure
-        if: failure()
-        run: echo "::error::Short build failed — open the 'Build the Short' step above."
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
