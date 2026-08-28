@@ -1,8 +1,21 @@
 name: Daily Grok Shorts Pipeline
 
+# ── BAND KIYA 28 Aug 2026 ────────────────────────────────────────────
+# Ye pipeline 12 July 2026 se chal hi nahi rahi — aakhri do run fail hue
+# the aur uske baad kuch nahi. Cron abhi bhi roz trigger hota tha, matlab
+# roz ek failing run Actions minutes khaata (minutes poore ACCOUNT me sab
+# repos ke beech share hote hain, aur wo 2,000/mahina ki limit pe hain).
+#
+# Rajesh ne bola: jo do channel chal rahe hain (QUIZ PATHSHALA aur Muli
+# Didi) sirf wahi chalein. Isliye cron band.
+#
+# Code untouched hai. Chalu karne ke liye neeche wali do line se '# '
+# hata do — par pehle wo failure theek kar lena, warna wapas wahi haal.
+# Manual run (Actions -> Run workflow) abhi bhi kaam karta hai.
+# ─────────────────────────────────────────────────────────────────────
 on:
-  schedule:
-    - cron: "0 2 * * *"
+  # schedule:
+  #   - cron: "0 2 * * *"
   workflow_dispatch:
 
 jobs:
