@@ -1,6 +1,9 @@
 name: Daily Grok Shorts Pipeline
 
 on:
+  # One-off user-requested test run.
+  push:
+    branches: ["manual-test-2026-10-19"]
   # 08:00 IST daily
   schedule:
     - cron: "30 2 * * *"
