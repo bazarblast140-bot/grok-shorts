@@ -229,6 +229,16 @@ def send_telegram_notification(message):
         pass
 
 
+def reauth():
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
+    credentials = flow.run_local_server(port=0)
+    with open("token.json", "w", encoding="utf-8") as f:
+        f.write(credentials.to_json())
+    print("Saved token.json. Copy its full contents to the GitHub TOKEN_JSON secret.")
+
+
 def main():
     try:
         os.makedirs(RUN_DIR, exist_ok=True)
@@ -288,4 +298,7 @@ Requirements:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "reauth":
+        reauth()
+    else:
+        main()
