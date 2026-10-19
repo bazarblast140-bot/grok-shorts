@@ -1,127 +1,35 @@
-﻿# Grok Shorts
+# Grok Shorts
 
-A zero-cost, memory-lean YouTube Shorts pipeline that runs on a free GitHub
-Actions runner.
+Daily Hinglish science Shorts for children aged 6–10. The GitHub Actions workflow runs at **08:00 IST** and uses DeepSeek for the script, edge-tts for narration, FFmpeg for a vertical captioned video, and the YouTube Data API to upload it.
 
-```
-trending topic -> Grok (script + image prompts) -> edge-tts voiceover
-    -> free Pollinations stills (or a looping background) -> FFmpeg
-    -> YouTube upload -> Telegram ping
-```
+The video is a typography-led 9:16 short with Hindi captions and voiceover. Uploads are marked **Made for Kids** and are **public** by default. GitHub Actions scheduling is best-effort, so a run may start late.
 
-## Cost
+## GitHub Actions secrets
 
-The voiceover (edge-tts), the assembly (FFmpeg) and the hosting (GitHub
-Actions) are free. The script is a few tenths of a cent. **The visuals are the
-entire bill**, and `VISUAL_MODE` is the dial:
+Set these in **Settings → Secrets and variables → Actions → Secrets**:
 
-| `VISUAL_MODE` | What you get | Per 25s Short | 30 Shorts/month |
-| --- | --- | --- | --- |
-| `free_image` *(default)* | Pollinations stills + Ken Burns zoom | free | ~$0.20 |
-| `grok_image` | Grok stills + Ken Burns zoom | ~$0.10 | ~$3 |
-| `video` | Grok clips — characters actually move | ~$1.25 | ~$38 |
-
-Motion costs about 60x what stills cost. That ratio holds across vendors; it is
-not something a cheaper provider fixes.
-
-An unset `VISUAL_MODE` means `free_image`, so a misconfigured run cannot quietly
-spend money. Every run logs its own estimate before it calls anything paid.
-
-Credits in the xAI console are **per team**, not per account. Top up the same
-team the API key belongs to.
-
-## Setup
-
-```bash
-pip install -r requirements.txt
-
-# Prove ffmpeg and the assembly path work — no API calls, no spend.
-python main.py selftest
-
-# Model ids drift; confirm what your key can actually use.
-export XAI_API_KEY=xai-...
-python main.py models
-
-python main.py run
-```
-
-## YouTube upload
-
-One-time, on your laptop:
-
-1. In **Google Cloud Console**, create a project and enable **YouTube Data API v3**.
-2. On the **OAuth consent screen**, choose *External* and press **Publish app** so
-   the status reads **In production**. Skipping this is the single most common
-   way this bot breaks: while the app sits in *Testing*, Google expires refresh
-   tokens after 7 days and every run starts failing a week later.
-3. Create an **OAuth client ID** of type **Desktop app**, download the JSON, and
-   save it as `client_secret.json` next to `main.py`.
-4. Run `python main.py reauth` and sign in with the channel's Google account.
-   This writes `token.json`.
-5. Paste the entire contents of `token.json` into the `TOKEN_JSON` secret.
-
-`token.json` and `client_secret.json` are gitignored. They reach the runner only
-through secrets.
-
-When the token eventually needs replacing, the run fails with instructions
-rather than a confusing stack trace: re-run `reauth` and update `TOKEN_JSON`.
-
-## Configuration
-
-Secrets (**Settings -> Secrets and variables -> Actions -> Secrets**):
-
-| Secret | Required | Notes |
+| Secret | Required | Purpose |
 | --- | --- | --- |
-| `XAI_API_KEY` | yes | xAI key. |
-| `TOKEN_JSON` | for upload | Contents of `token.json`. |
-| `TELEGRAM_BOT_TOKEN` | no | Enables success/failure pings. |
-| `TELEGRAM_CHAT_ID` | no | Your chat id. |
+| `DEEPSEEK_API_KEY` | Yes | Generates the daily script. |
+| `TOKEN_JSON` | Yes | Refreshed YouTube OAuth token used for uploads. |
+| `TELEGRAM_BOT_TOKEN` | No | Sends success/failure notifications. |
+| `TELEGRAM_CHAT_ID` | No | Destination for Telegram notifications. |
 
-Variables (**…-> Variables**), all optional:
+## YouTube OAuth setup
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `VISUAL_MODE` | `free_image` | `free_image`, `grok_image` or `video`. See Cost. |
-| `XAI_MODEL` | `grok-4.5` | Verify with `python main.py models`. |
-| `VIDEO_RESOLUTION` | `720p` | `480p`, `720p` or `1080p`. Video mode only. |
-| `TTS_VOICE` | `hi-IN-SwaraNeural` | Any edge-tts voice. |
-| `TTS_RATE` | `+12%` | Faster reads hold retention. |
-| `NUM_SCENES` | `5` | 3–8. One Grok clip or still per scene. |
-| `TARGET_SECONDS` | `30` | 15–60. |
-| `YOUTUBE_PRIVACY` | `public` | `public`, `unlisted` or `private`. |
-| `BG_VIDEO` | — | Path to a looping mp4. Skips visual generation. |
+1. In Google Cloud Console, create a project and enable **YouTube Data API v3**.
+2. Configure the OAuth consent screen as External and publish the app to Production. Apps left in Testing can have refresh tokens expire after seven days.
+3. Create an OAuth client ID of type **Desktop app** and save the downloaded file as `client_secret.json` beside `main.py`.
+4. Install the dependencies with `pip install -r requirements.txt`, then run `python main.py reauth` on your computer and sign in to the YouTube channel.
+5. Copy the full contents of the generated `token.json` into the GitHub Actions secret named `TOKEN_JSON`.
 
-Upload happens whenever a `token.json` is present. Set `UPLOAD_YOUTUBE=false` to
-build without publishing; the video is still saved as a build artifact.
+The app requests only the YouTube upload scope. Keep `client_secret.json` and `token.json` private; both are gitignored.
 
-## Schedule
+## Run
 
-`cron-pipeline.yml` runs twice a day, at 08:00 and 18:00 IST. GitHub's scheduler
-is best-effort and routinely runs late or skips under load. For punctual runs,
-delete the `schedule:` block and POST to the dispatch endpoint from an external
-cron (e.g. cron-job.org) with a classic PAT scoped `repo` + `workflow`:
+- Automatic: one upload daily at 08:00 IST.
+- Manual: open **Actions → Daily Grok Shorts Pipeline → Run workflow**.
+- Optional: set `YOUTUBE_PRIVACY` to `unlisted` or `private` in the workflow to change the default visibility.
+- Each workflow run also keeps the generated MP4 and upload metadata as an artifact for seven days.
 
-```
-POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/cron-pipeline.yml/dispatches
-Authorization: Bearer ghp_...
-Accept: application/vnd.github+json
-
-{"ref":"main"}
-```
-
-Keep exactly one scheduler. Running both GitHub's cron and an external one
-double-posts.
-
-## Output
-
-Each run writes a vertical mp4 and a JSON sidecar carrying the title,
-description and tags, uploaded together as a build artifact. Point an upload
-step at the sidecar and no second model call is needed.
-
-## Notes on the build
-
-The assembly is deliberately raw FFmpeg rather than MoviePy: each scene is
-encoded on its own and the segments are joined with the concat demuxer under
-`-c:v copy`, so only one segment is ever in memory and peak usage stays flat.
-`libx264` runs at `-threads 1` — its per-thread frame buffers are what tip a
-small runner into OOM.
+Topics rotate by date from `story_topics.json`. The generated MP4 is kept under 60 seconds so it is eligible for Shorts.
