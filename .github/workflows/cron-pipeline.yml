@@ -9,22 +9,37 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg and Hindi fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Run Pipeline
+      - name: Generate and upload Short
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
+          YOUTUBE_PRIVACY: public
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
+      - name: Save generated video and metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-youtube-short
+          path: |
+            run/daily-short.mp4
+            run/video.json
+          if-no-files-found: ignore
+          retention-days: 7
