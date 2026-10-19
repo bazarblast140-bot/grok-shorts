@@ -121,10 +121,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     with open(path, "w", encoding="utf-8") as f:
         f.write(header)
         for sentence, duration in zip(sentences, durations):
-            wrapped = textwrap.fill(sentence, width=25, break_long_words=False).replace("\n", r"\N")
+            wrapped = textwrap.fill(sentence, width=25, break_long_words=False)
+            caption = ass_escape(wrapped).replace("\n", r"\N")
             f.write(
                 f"Dialogue: 0,{ass_time(current)},{ass_time(current + duration)},Default,,0,0,0,,"
-                f"{ass_escape(wrapped)}\n"
+                f"{caption}\n"
             )
             current += duration
     return current
@@ -262,6 +263,8 @@ Requirements:
 
         audio_path, sentence_durations = asyncio.run(make_voiceover(sentences))
         duration = write_captions(sentences, sentence_durations)
+        if duration > 58:
+            raise RuntimeError(f"Voiceover is {duration:.1f} seconds; keep Shorts under 60 seconds.")
         build_video(topic, audio_path, duration)
 
         video_id = upload_to_youtube(topic, script)
