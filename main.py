@@ -143,7 +143,7 @@ def build_video(topic, audio_path, duration):
     )
     run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"color=c=#101a35:s=720x1280:r=30:d={duration:.3f}",
+        "-f", "lavfi", "-i", f"color=c=0x101a35:s=720x1280:r=30:d={duration:.3f}",
         "-i", audio_path, "-vf", filter_graph,
         "-c:v", "libx264", "-preset", "veryfast", "-threads", "1",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
