@@ -30,7 +30,7 @@ def call_deepseek(prompt, system_prompt):
         "https://api.deepseek.com/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={
-            "model": "deepseek-chat",
+            "model": "deepseek-flash",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
