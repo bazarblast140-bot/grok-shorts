@@ -1,9 +1,8 @@
 name: Daily Grok Shorts Pipeline
 
+# HARD PAUSED — do not upload to owner channel.
+# Schedule removed. Manual run still possible if needed.
 on:
-  # 08:00 IST daily
-  schedule:
-    - cron: "30 2 * * *"
   workflow_dispatch:
 
 jobs:
